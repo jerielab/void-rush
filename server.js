@@ -518,6 +518,28 @@ wss.on("connection", (socket) => {
         return;
     }
 
+    if (data.type === "turretDamage") {
+      if (!player.roomCode) return;
+
+      const room = rooms.get(player.roomCode);
+      if (!room) return;
+
+      // Only relay damage from a non-host player to the host
+      if (room.hostId === playerId) return;
+
+      const hostPlayer = players.get(room.hostId);
+
+      if (hostPlayer && hostPlayer.socket.readyState === WebSocket.OPEN) {
+        hostPlayer.socket.send(JSON.stringify({
+          type: "turretDamage",
+          turretId: data.turretId,
+          damage: data.damage || 1
+        }));
+      }
+
+      return;
+    }
+
     if (data.type === "bossPosition") {
       if (!player.roomCode) return;
 
