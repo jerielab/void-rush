@@ -597,6 +597,20 @@ wss.on("connection", (socket) => {
         return;
     }
 
+    if (data.type === "sfx") {
+      if (!player.roomCode) return;
+      const room = rooms.get(player.roomCode);
+      if (!room || room.hostId !== playerId) return;
+      room.players.forEach((pid) => {
+        if (pid === playerId) return;
+        const pl = players.get(pid);
+        if (pl && pl.socket.readyState === WebSocket.OPEN) {
+          pl.socket.send(JSON.stringify({ type: "sfx", key: data.key }));
+        }
+      });
+      return;
+    }
+
     if (data.type === "startGame") {
       if (!player.roomCode) return;
 
@@ -639,8 +653,7 @@ wss.on("connection", (socket) => {
   });
 });
 
-server.listen(3000, () => {
-  console.log(
-    "VOID//RUSH multiplayer server running on http://localhost:3000"
-  );
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => {
+  console.log(`VOID//RUSH multiplayer server running on port ${PORT}`);
 });
