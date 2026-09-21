@@ -432,10 +432,10 @@ playMusic("menu");
 // keep the placeholder synth sound.
 // ======================================================
 const SFX_FILES = {
-  attack: null, hit: ["sfx/hit1.ogg","sfx/hit2.ogg","sfx/hit3.ogg","sfx/hit4.ogg"], chargedAttack: "sfx/chargedAttack.ogg", dash: "sfx/dash.ogg", parry: "sfx/parry.ogg", playerHurt: null,
+  attack: null, hit: ["sfx/hit1.ogg","sfx/hit2.ogg","sfx/hit3.ogg","sfx/hit4.ogg"], chargedAttack: "sfx/chargedattack.ogg", dash: "sfx/dash.ogg", parry: "sfx/parry.ogg", playerHurt: null,
   phaseTransition: "sfx/phasetransition.ogg", victory: null, defeat: null,
   charge: null, volley: null, dashCombo: "sfx/slash.ogg", snapSlash: "sfx/slash.ogg",
-  arcMarks: null, megaOmniDash: "sfx/omniDash.ogg", voidWindup: "sfx/voidwindup.ogg", voidCleave: "sfx/voidcleave.ogg",
+  arcMarks: null, megaOmniDash: "sfx/omnidash.ogg", voidWindup: "sfx/voidwindup.ogg", voidCleave: "sfx/voidcleave.ogg",
   gridStrike: null, snipe: "sfx/snipe.ogg", sweep: null, triBurst: null,
   laserWall: "sfx/laser_wall.ogg", homing: null, minefield: null, fanBullets: null, turretFire: null,
 };
@@ -510,15 +510,6 @@ function playSfx(key, synthFn){
   if (!file || !playFile(file)) synthFn();
 }
 
-const BOSS_SFX=["charge","volley","dashCombo","snapSlash","arcMarks","megaOmniDash","voidWindup","voidCleave","gridStrike","snipe","sweep","triBurst","laserWall","homing","minefield","fanBullets","turretFire","phaseTransition"];
-for(const k of BOSS_SFX){
-  const orig=sfx[k];
-  sfx[k]=()=>{
-    orig();
-    if(inRoom&&isHost&&socket.readyState===WebSocket.OPEN) socket.send(JSON.stringify({type:"sfx",key:k}));
-  };
-}
-
 const sfx = {
   attack:()=>playSfx("attack", ()=>playTone(600,0.08,"square",0.15,300)),
   hit:()=>playSfx("hit", ()=>{playTone(150,0.12,"sawtooth",0.25,60);playNoise(0.08,0.15);}),
@@ -548,6 +539,15 @@ const sfx = {
   fanBullets:()=>playSfx("fanBullets", ()=>playTone(600,0.1,"square",0.13,900)),
   turretFire:()=>playSfx("turretFire", ()=>playTone(380,0.06,"square",0.1,320)),
 };
+
+const BOSS_SFX=["charge","volley","dashCombo","snapSlash","arcMarks","megaOmniDash","voidWindup","voidCleave","gridStrike","snipe","sweep","triBurst","laserWall","homing","minefield","fanBullets","turretFire","phaseTransition"];
+for(const k of BOSS_SFX){
+  const orig=sfx[k];
+  sfx[k]=()=>{
+    orig();
+    if(inRoom&&isHost&&socket.readyState===WebSocket.OPEN) socket.send(JSON.stringify({type:"sfx",key:k}));
+  };
+}
 
 // ---- background music: silent until MUSIC_FILE is set above ----
 
