@@ -405,6 +405,7 @@ let musicEl=null;
 let musicAudioEl = null;
 let musicLoopTimer = null;
 let audioUnlocked=false;
+let activeLaserWall = null;
 
 const roomMenu = document.getElementById("roomMenu");
 const roomButtons = document.getElementById("roomButtons");
@@ -451,15 +452,33 @@ function unlockAudio(){
 window.addEventListener("pointerdown",unlockAudio,{once:true});
 window.addEventListener("keydown",unlockAudio,{once:true});
 
-const audioFileCache={};
-function playFile(path,vol=0.6){
-  if(!audioUnlocked)return;
-  let el=audioFileCache[path];
-  if(!el){ el=new Audio(path); audioFileCache[path]=el; }
-  const inst=el.cloneNode(); // clone so overlapping plays don't cut each other off
-  inst.volume=vol;
-  inst.play().catch(()=>{});
+const sfxBuffers={};   // path -> AudioBuffer | Promise | null (failed)
+const sfxLastPlay={};  // path -> ms, anti-spam guard
+function loadSfx(path){
+  if(path in sfxBuffers) return;
+  sfxBuffers[path]=fetch(path)
+    .then(r=>{ if(!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+    .then(ab=>audioCtx.decodeAudioData(ab))
+    .then(buf=>{ sfxBuffers[path]=buf; })
+    .catch(err=>{ console.warn("SFX failed:",path,err); sfxBuffers[path]=null; });
 }
+Object.values(SFX_FILES).flat().filter(Boolean).forEach(loadSfx);
+
+function playFile(path,vol=0.6){
+  if(!audioUnlocked) return false;
+  if(audioCtx.state!=="running") audioCtx.resume();
+  const buf=sfxBuffers[path];
+  if(!(buf instanceof AudioBuffer)){ loadSfx(path); return false; } // not ready/failed -> synth fallback
+  const now=performance.now();
+  if(now-(sfxLastPlay[path]||0)<35) return true; // same sound within 35ms = ignore
+  sfxLastPlay[path]=now;
+  const src=audioCtx.createBufferSource(); src.buffer=buf;
+  const g=audioCtx.createGain(); g.gain.value=vol;
+  src.connect(g).connect(audioCtx.destination);
+  src.start();
+  return true;
+}
+
 function playTone(freq,duration,type="sine",vol=0.2,glideTo=null){
   if(!audioUnlocked)return;
   const osc=audioCtx.createOscillator(),gain=audioCtx.createGain();
@@ -485,14 +504,19 @@ function playNoise(duration,vol=0.2){
 
 function playSfx(key, synthFn){
   const entry = SFX_FILES[key];
-  if (Array.isArray(entry) && entry.length > 0) {
-    const pick = entry[Math.floor(Math.random() * entry.length)];
-    playFile(pick);
-  } else if (typeof entry === "string" && entry) {
-    playFile(entry);
-  } else {
-    synthFn();
-  }
+  let file = null;
+  if (Array.isArray(entry) && entry.length) file = entry[Math.floor(Math.random()*entry.length)];
+  else if (typeof entry === "string" && entry) file = entry;
+  if (!file || !playFile(file)) synthFn();
+}
+
+const BOSS_SFX=["charge","volley","dashCombo","snapSlash","arcMarks","megaOmniDash","voidWindup","voidCleave","gridStrike","snipe","sweep","triBurst","laserWall","homing","minefield","fanBullets","turretFire","phaseTransition"];
+for(const k of BOSS_SFX){
+  const orig=sfx[k];
+  sfx[k]=()=>{
+    orig();
+    if(inRoom&&isHost&&socket.readyState===WebSocket.OPEN) socket.send(JSON.stringify({type:"sfx",key:k}));
+  };
 }
 
 const sfx = {
@@ -690,8 +714,6 @@ function sendBossBullet(bullet) {
     if (!inRoom || !isHost) return;
     if (socket.readyState !== WebSocket.OPEN) return;
 
-    console.log("HOST SENDING BOSS BULLET:", bullet);
-
     socket.send(JSON.stringify({
         type: "bossAttack",
         attack: {
@@ -747,8 +769,7 @@ let serverBoss = {
     targetPlayerY: 400
 };
 
-function handleSocketMessage(event){
-    console.log("SERVER MESSAGE:", event.data);  
+function handleSocketMessage(event){ 
 
     const data = JSON.parse(event.data);
 
@@ -775,6 +796,11 @@ function handleSocketMessage(event){
         roomStatus.textContent = isHost
             ? "Waiting for another player..."
             : "Waiting for the host to start...";
+    }
+
+    if (data.type === "sfx") {
+      if (!isHost && BOSS_SFX.includes(data.key)) sfx[data.key]();
+      return;
     }
 
     if (data.type === "roomPlayers") {
@@ -1641,77 +1667,94 @@ function arcMarksUpdate(dt,p,b,opts={}){
 
 // Shared LASER WALL (rotating perpendicular cross blades)
 // opts: { totalDur, warnDur, fireStart, fireEnd, warnRot, fireRot, fadeRot, warnThick, fireThick, dmg, col, glow, bladeLen }
-function laserWallUpdate(dt,p,b,opts={}){
- const totalDur=opts.totalDur||3.0;
- const warnEnd=opts.warnEnd||0.75;
- const fireEnd=opts.fireEnd||3.0;
-
- const phase=
-  b.modeTime<warnEnd?"warn":
-  b.modeTime<fireEnd?"fire":
-  "fade";
-
- if(phase==="warn" && !b._laserWarnSoundPlayed){
-  b._laserWarnSoundPlayed=true;
-  sfx.laserWall();
- }
-
- const rot=
-  phase==="warn"?(opts.warnRot||0.65):
-  phase==="fire"?(opts.fireRot||2.1):
-  (opts.fadeRot||1.1);
-
- if(b.laserWallRot==null){
-  b.laserWallRot=opts.startAng!=null
-   ?opts.startAng
-   :Math.random()*Math.PI;
- }
-
- b.laserWallRot+=rot*dt;
-
- const thick=
-  phase==="warn"?(opts.warnThick||7):
-  phase==="fire"?(opts.fireThick||38):
-  22;
-
- const dmg=phase==="fire"?(opts.dmg||20):0;
- const bladeLen=opts.bladeLen||2200;
- const palette=getBossAttackPalette(b);
- const col=opts.col||palette.main, glow=opts.glow||palette.glow;
-
- // ---- actual damage: trace both blades with short-lived marks every frame while firing ----
- if(phase==="fire"){
-  const step=22;
-  for(let bi=0;bi<2;bi++){
-   const bladeAng=b.laserWallRot+bi*Math.PI/2;
-   for(const sign of [1,-1]){
-    for(let st=step;st<bladeLen;st+=step){
-     const wx=b.x+Math.cos(bladeAng)*sign*st, wy=b.y+Math.sin(bladeAng)*sign*st;
-     game.bullets.push({x:wx,y:wy,vx:0,vy:0,r:thick*0.42,t:0.055,color:col,glow:glow,mark:true,dmg:dmg,noParry:true});
-    }
-   }
-  }
- }
-
- b._laserAng0=b.laserWallRot;
- b._laserAng1=b.laserWallRot+Math.PI/2;
- b._laserPhase=phase;
- b._laserThick=thick;
- b._laserBladeLen=bladeLen;
-
- if(b.modeTime>totalDur){
-  b.laserWallRot=0;
-  b._laserAng0=null;
-  b._laserAng1=null;
-  b._laserPhase=null;
-  b._laserWarnSoundPlayed=false;
-  b.mode="idle";
-  b.modeTime=0;
-  return true;
- }
-
- return false;
+function createLaserWallCollision(x, y, width, height, rotation = 0, duration = 700) {
+  activeLaserWall = {
+    x,
+    y,
+    width,
+    height,
+    rotation,
+    startTime: performance.now(),
+    duration
+  };
 }
+
+function laserWallHitsPlayer(laser, player) {
+  return (
+    player.x + player.width / 2 > laser.x - laser.width / 2 &&
+    player.x - player.width / 2 < laser.x + laser.width / 2 &&
+    player.y + player.height / 2 > laser.y - laser.height / 2 &&
+    player.y - player.height / 2 < laser.y + laser.height / 2
+  );
+}
+
+// Is point (x,y) inside a rectangle centred at (cx,cy), rotated by ang?
+function pointInRotRect(x,y,cx,cy,ang,halfLen,halfWid){
+  const dx=x-cx, dy=y-cy;
+  const c=Math.cos(ang), s=Math.sin(ang);
+  return Math.abs(dx*c+dy*s)<=halfLen && Math.abs(-dx*s+dy*c)<=halfWid;
+}
+
+// Shared LASER WALL (rotating perpendicular cross blades) — rectangle hitboxes, no bullets
+function laserWallUpdate(dt,p,b,opts={}){
+  const totalDur=opts.totalDur||3.0;
+  const warnEnd=opts.warnEnd||0.75;
+  const fireEnd=opts.fireEnd||3.0;
+
+  const phase=b.modeTime<warnEnd?"warn":b.modeTime<fireEnd?"fire":"fade";
+
+  if(phase==="warn" && !b._laserWarnSoundPlayed){
+    b._laserWarnSoundPlayed=true;
+    sfx.laserWall();
+  }
+
+  const rot=phase==="warn"?(opts.warnRot||0.65):phase==="fire"?(opts.fireRot||2.1):(opts.fadeRot||1.1);
+
+  if(b.laserWallRot==null){
+    b.laserWallRot=opts.startAng!=null?opts.startAng:Math.random()*Math.PI;
+  }
+  b.laserWallRot+=rot*dt;
+
+  const thick=phase==="warn"?(opts.warnThick||7):phase==="fire"?(opts.fireThick||38):22;
+  const dmg=phase==="fire"?(opts.dmg||20):0;
+  const bladeLen=opts.bladeLen||2200;
+
+  // ---- damage: rotated-rectangle test, checked 10x/sec (same 0.42 width factor as the old marks) ----
+  if(dmg>0){
+    b._laserHitT=(b._laserHitT||0)-dt;
+    if(b._laserHitT<=0){
+      b._laserHitT=0.1;
+      const halfW=thick*0.42+(p.r||14);
+      const a0=b.laserWallRot, a1=a0+Math.PI/2;
+      hurtAll((x,y)=>
+        pointInRotRect(x,y,b.x,b.y,a0,bladeLen,halfW)||
+        pointInRotRect(x,y,b.x,b.y,a1,bladeLen,halfW),
+        dmg,"contact");
+    }
+  }
+
+  b._laserAng0=b.laserWallRot;
+  b._laserAng1=b.laserWallRot+Math.PI/2;
+  b._laserPhase=phase;
+  b._laserThick=thick;
+  b._laserBladeLen=bladeLen;
+  b._laserRotSpeed=rot; // synced to guests so they can smooth the rotation
+
+  if(b.modeTime>totalDur){
+    b.laserWallRot=0;
+    b._laserAng0=null;
+    b._laserAng1=null;
+    b._laserPhase=null;
+    b._laserRotSpeed=0;
+    b._laserHitT=0;
+    b._laserWarnSoundPlayed=false;
+    b.mode="idle";
+    b.modeTime=0;
+    return true;
+  }
+  return false;
+}
+
 // Shared CHARGE attack (B1 big_charge style)
 // opts: { telegraphDur, speed, chargeDur, dmg, chargeAngle }
 function chargeUpdate(dt,p,b,opts={}){
@@ -1731,7 +1774,6 @@ function chargeUpdate(dt,p,b,opts={}){
 // Shared VOLLEY (circular burst)
 // opts: { spawnAt, count, bulletSpeed, r, col }
 function volleyUpdate(dt,p,b,opts={}){
-  console.log("VOLLEY UPDATE RUNNING", b.mode, b.modeTime);
  const spawnAt=opts.spawnAt||0.40;
  if(b.modeTime>spawnAt&&!b.v1){
   b.v1=true;
@@ -2799,7 +2841,10 @@ function update(dt){
  if(IS_MOBILE){
   if(p.charging)btnAtk.classList.add("charging");else btnAtk.classList.remove("charging");
  }
-
+  if(inRoom && !isHost && game.boss && game.boss._laserAng0!=null){
+    const gb=game.boss, w=gb._laserRotSpeed||0;
+    gb.modeTime+=dt; gb._laserAng0+=w*dt; gb._laserAng1+=w*dt;
+  }
   if (!inRoom) {
     bossAI(dt);
   } else if (isHost) {
@@ -2823,21 +2868,23 @@ function update(dt){
  for(let i=game.rings.length-1;i>=0;i--){
   const r=game.rings[i];r.life-=dt;
   if(r.type==="mark"){
-   if(r.life<r.maxLife*0.45&&!r.fired){
-    r.fired=true;const len=r.fullScreen?4000:1350;
-    if(r.fullScreen){
-     // FULL SCREEN bidirectional line: extend BOTH directions from origin
-     for(let sign of [-1,1]){
-      for(let st=0;st<len;st+=22){
-       game.bullets.push({x:r.x+Math.cos(r.a)*st*sign,y:r.y+Math.sin(r.a)*st*sign,vx:0,vy:0,r:r.width*0.42,t:.06,color:r.color||"#62d9ff",glow:r.glow||"#0ea5e9",mark:true,dmg:r.dmg});
-      }
-     }
-    }else{
-     for(let st=0;st<len;st+=22){
-      game.bullets.push({x:r.x+Math.cos(r.a)*st,y:r.y+Math.sin(r.a)*st,vx:0,vy:0,r:r.width*0.42,t:.06,color:r.color||"#62d9ff",glow:r.glow||"#0ea5e9",mark:true,dmg:r.dmg});
-     }
+    if(r.life<r.maxLife*0.45&&!r.fired){
+      r.fired=true;r.hitT=0.06;r.hitLock=false;
     }
-   }
+    if(r.fired&&r.hitT>0){
+      r.hitT-=dt;
+      if(!r.hitLock&&!isDead){
+        const len=r.fullScreen?4000:1350;
+        const halfLen=r.fullScreen?len:len/2;
+        // fullScreen = centred on the boss, both directions; otherwise one-sided from the origin
+        const cx=r.fullScreen?r.x:r.x+Math.cos(r.a)*halfLen;
+        const cy=r.fullScreen?r.y:r.y+Math.sin(r.a)*halfLen;
+        if(pointInRotRect(p.x,p.y,cx,cy,r.a,halfLen,r.width*0.42+p.r)){
+          r.hitLock=true;
+          hurt(r.dmg||10,"contact");
+        }
+      }
+    }
   }else if(r.type==="mine"){
    const prog=1-r.life/r.maxLife;
    r.armed=prog>r.arm;
@@ -3024,6 +3071,15 @@ function draw(){
       len * 2,
       animatedWidth
     );
+
+    if (r.fired && r.hitT > 0) {
+      ctx.globalAlpha = 0.9;
+      ctx.shadowBlur = 18;
+      ctx.shadowColor = "#0ea5e9";
+      ctx.fillStyle = "#7dd3fc";
+      ctx.fillRect(startX, -r.width * 0.42, len * 2, r.width * 0.84);
+      ctx.shadowBlur = 0;
+    }
 
     ctx.restore();
   }
