@@ -1528,6 +1528,39 @@ function attack(charge=0){
         }
       }
     }
+   }else if(t.isAfter){
+     burst(t.x,t.y,6,"#62d9ff");
+   }else{
+     let baseDmg=45;
+     if(b.type===1)baseDmg=b.phase===2?68:55;
+     else if(b.type===2)baseDmg=b.phase===2?58:48;
+     else if(b.type===3)baseDmg=b.phase===2?60:46;
+     else if(b.type===4)baseDmg=b.phase===1?52:b.phase===2?45:48;
+     let dmg=Math.round(baseDmg*dmgMult);
+     if (inRoom && !isHost) {
+       sendBossDamage(dmg);
+     } else {
+       b.hp-=dmg;
+     }
+     sfx.hit();
+     b.flash=isFullCharge?0.22:0.12;game.shake=(b.type===2||(b.type===4&&b.phase===2)?6:4)+c*5 + (isFullCharge?6:0);
+     let col="#ffd45b";
+     if(c>.75)col=c>.9?"#ff6b35":"#ffa94d";
+     if(isFullCharge)col="#ff2e1c";
+     if(b.type===2)col=isFullCharge?"#ff3b1c":c>.75?(c>.9?"#ff6b35":"#ffa94d"):"#62d9ff";
+     if(b.type===3)col=isFullCharge?"#ff2e1c":"#fcd34d";
+     if(b.type===4){col=b.phase===1?"#ff8fa3":b.phase===2?"#67e8f9":"#d8b4fe";if(c>.75)col="#ffb347";if(isFullCharge)col="#ff2e1c";}
+     number(t.x,t.y-65,"-"+dmg+(c>.85?" !!":""),col);burst(t.x,t.y,12+c*10,col);
+     if(b.hp<=0){
+       b.hp=0;
+       if (inRoom && isHost) sendBossCombatState();
+       finish(true);
+       return;
+     }
+     if(b.type===4){
+       if(b.phase===1&&b.hp<=b.maxHp*0.666){b.phase=2;b.mode="phase_switch";b.modeTime=0;b.phaseSwitchFlash=1;number(b.x,b.y-90,"PHANTOM PHASE","#62d9ff");burst(b.x,b.y,70,"#62d9ff");game.shake=26;}
+       else if(b.phase===2&&b.hp<=b.maxHp*0.333){b.phase=3;b.mode="phase_switch";b.modeTime=0;b.phaseSwitchFlash=1;number(b.x,b.y-90,"OMEGA PHASE","#a855f7");burst(b.x,b.y,80,"#a855f7");game.shake=30;}
+     }
    }
   }
  }
