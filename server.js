@@ -470,18 +470,15 @@ wss.on("connection", (socket) => {
     // game.boss on P2 was never updated (hp/phase/mode/etc. never synced).
     if (data.type === "bossCombatState") {
       if (!player.roomCode) return;
-
       const room = rooms.get(player.roomCode);
-
       if (!room) return;
-
-      if (room.hostId !== playerId) return; // only the host may drive boss state
+      if (room.hostId !== playerId) return;
 
       broadcastToRoom(player.roomCode, {
         type: "bossCombatState",
-        boss: data.boss
+        boss: data.boss,
+        dmg: data.dmg   // NEW
       });
-
       return;
     }
 
@@ -503,19 +500,20 @@ wss.on("connection", (socket) => {
     }
 
     if (data.type === "damageBoss") {
-        if (!player.roomCode) return;
-        const room = rooms.get(player.roomCode);
-        if (!room) return;
-        if (room.hostId === playerId) return; // host doesn't need this relayed to itself
+      if (!player.roomCode) return;
+      const room = rooms.get(player.roomCode);
+      if (!room) return;
+      if (room.hostId === playerId) return;
 
-        const hostPlayer = players.get(room.hostId);
-        if (hostPlayer && hostPlayer.socket.readyState === WebSocket.OPEN) {
-            hostPlayer.socket.send(JSON.stringify({
-            type: "damageBoss",
-            amount: data.amount
-            }));
-        }
-        return;
+      const hostPlayer = players.get(room.hostId);
+      if (hostPlayer && hostPlayer.socket.readyState === WebSocket.OPEN) {
+        hostPlayer.socket.send(JSON.stringify({
+          type: "damageBoss",
+          amount: data.amount,
+          playerId: playerId   // NEW
+        }));
+      }
+      return;
     }
 
     if (data.type === "turretDamage") {

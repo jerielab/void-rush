@@ -239,6 +239,15 @@ h1{animation:titleGlow 3.2s ease-in-out infinite}
 .party-member .pm-bar i{display:block;height:100%;transition:width .2s ease}
 .party-member.dead{opacity:.4}
 
+.dmg-breakdown{margin-top:18px;text-align:left}
+.dmg-title{font:11px monospace;letter-spacing:2px;color:#888;margin-bottom:8px;text-align:center}
+.dmg-row{display:flex;align-items:center;gap:8px;margin-bottom:6px;font:11px monospace}
+.dmg-swatch{width:10px;height:10px;border-radius:50%;flex-shrink:0;box-shadow:0 0 6px currentColor}
+.dmg-label{width:66px;flex-shrink:0;color:#ddd}
+.dmg-bar-wrap{flex:1;height:10px;background:#15151b;border:1px solid #333;border-radius:4px;overflow:hidden}
+.dmg-bar{height:100%;transition:width .4s ease}
+.dmg-pct{width:90px;text-align:right;flex-shrink:0;color:#ccc}
+
 /* ===== END SCREEN POLISH ===== */
 #end .box{animation:endIn .5s cubic-bezier(.2,.9,.3,1.2)}
 @keyframes endIn{from{opacity:0;transform:scale(.9) translateY(12px)}to{opacity:1;transform:scale(1) translateY(0)}}
@@ -700,14 +709,15 @@ function sendPlayerPosition() {
 }
 
 function sendBossCombatState() {
-    if (!inRoom || !isHost) return;
-    if (socket.readyState !== WebSocket.OPEN) return;
-    if (!game || !game.boss) return;
+  if (!inRoom || !isHost) return;
+  if (socket.readyState !== WebSocket.OPEN) return;
+  if (!game || !game.boss) return;
 
-    socket.send(JSON.stringify({
-        type: "bossCombatState",
-        boss: game.boss
-    }));
+  socket.send(JSON.stringify({
+    type: "bossCombatState",
+    boss: game.boss,
+    dmg: game.damageByPlayer || {}
+  }));
 }
 
 function sendBossBullet(bullet) {
@@ -752,6 +762,12 @@ function sendBossDamage(dmg) {
   socket.send(JSON.stringify({ type: "damageBoss", amount: dmg }));
 }
 
+function trackDamage(playerId, amount){
+  if(!game) return;
+  if(!game.damageByPlayer) game.damageByPlayer = {};
+  game.damageByPlayer[playerId] = (game.damageByPlayer[playerId]||0) + amount;
+}
+
 function handleSocketOpen(){
     console.log("Connected to multiplayer server");
     reconnectAttempts = 0;
@@ -778,6 +794,38 @@ let serverBoss = {
     targetPlayerX: 800,
     targetPlayerY: 400
 };
+
+function renderDamageBreakdown(){
+  let el = document.getElementById("dmgBreakdown");
+  if(!el){
+    el = document.createElement("div");
+    el.id = "dmgBreakdown";
+    el.className = "dmg-breakdown";
+    document.querySelector("#end .box").appendChild(el);
+  }
+  if(!inRoom || !game || !game.damageByPlayer){ el.innerHTML=""; return; }
+
+  const entries = Object.entries(game.damageByPlayer).map(([id,amt])=>({id:Number(id),amt}));
+  if(!entries.length){ el.innerHTML=""; return; }
+  const total = entries.reduce((s,e)=>s+e.amt,0) || 1;
+  entries.sort((a,b)=>b.amt-a.amt);
+
+  let html = '<div class="dmg-title">DAMAGE CONTRIBUTION</div>';
+  for(const e of entries){
+    const pct = Math.round(e.amt/total*100);
+    const col = playerColor(e.id);
+    const isMe = e.id === myPlayerId;
+    const idx = roomPlayers.findIndex(p=>p.playerId===e.id);
+    const label = 'P'+(idx>=0?idx+1:'?') + (isMe?' (You)':'');
+    html += `<div class="dmg-row">
+      <span class="dmg-swatch" style="background:${col}"></span>
+      <span class="dmg-label">${label}</span>
+      <div class="dmg-bar-wrap"><div class="dmg-bar" style="width:${pct}%;background:${col}"></div></div>
+      <span class="dmg-pct">${pct}% · ${Math.round(e.amt)}</span>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
 
 function handleSocketMessage(event){ 
 
@@ -948,6 +996,7 @@ function handleSocketMessage(event){
         if (isHost) return;
         if (!game || !game.boss) return;
         Object.assign(game.boss, data.boss);
+        if (data.dmg) game.damageByPlayer = data.dmg; 
         if (game.boss.hp <= 0) finish(true);
         return;
     }
@@ -981,6 +1030,7 @@ function handleSocketMessage(event){
       b.flash = 0.12;
       number(b.x, b.y - 65, "-" + data.amount, "#ffd45b");
       burst(b.x, b.y, 10, "#ffd45b");
+      trackDamage(data.playerId, data.amount);
       if (b.hp <= 0) {
         sendBossCombatState();
         finish(true);
@@ -1351,6 +1401,7 @@ function newGame(bossType=1){
   running:true,start:performance.now(),shake:0,bossType,
   player:{x:W/2,y:H-160,r:14,hp:100,maxHp:100,stamina:160,maxStamina:160,face:0,dx:0,dy:0,dash:0,dashCD:0,parry:0,parryCD:0,attackCD:0,invuln:0,hitInvuln:0,charge:0,charging:false,maxChargeTime:0.85},
   bullets:[],particles:[],slashes:[],numbers:[],rings:[],trail:[],
+  damageByPlayer:{},
   elapsed:0,
  };
  if(bossType===1){
@@ -1541,6 +1592,7 @@ function attack(charge=0){
        sendBossDamage(dmg);
      } else {
        b.hp-=dmg;
+       trackDamage(myPlayerId, dmg);
      }
      sfx.hit();
      b.flash=isFullCharge?0.22:0.12;game.shake=(b.type===2||(b.type===4&&b.phase===2)?6:4)+c*5 + (isFullCharge?6:0);
@@ -3658,6 +3710,7 @@ function finish(win,reason){
  }
  updateEndScreenForRole();
  renderEndDots();
+ renderDamageBreakdown(); 
 }
 
 function renderEndDots(){
